@@ -2,27 +2,65 @@ name: CI
 
 on:
   pull_request:
-  release:
-    types:
-      - published
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+  id-token: write
 
 jobs:
   build:
-    name: Build on ${{ matrix.os }}
+    name: Build ${{ matrix.build-group }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-20.04, windows-2019, macos-11]
+        include:
+          - os: windows-2022
+            arch: x64
+            build-group: win32-x64
+          - os: windows-11-arm
+            arch: arm64
+            build-group: win32-arm64
     steps:
-    - uses: actions/checkout@v2
-    - uses: actions/setup-node@v2
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v6
       with:
-        node-version: '16'
-    - name: Install dependencies
-      if: startsWith(matrix.os, 'ubuntu')
-      run: sudo apt-get install libxtst-dev libpng++-dev
-    - run: npm install
-    - name: Release prebuilt artifacts
-      if: github.event_name == 'release' && github.event.action == 'published'
-      run: npx prebuild -t 9.0.0 -t 10.0.0 -t 11.0.0 -t 12.0.0 -t 13.0.0 -r electron -u ${{ secrets.PUBLISH_TOKEN }}
+        node-version: '24'
+        architecture: ${{ matrix.arch }}
+    - run: npm ci
+    - run: npm run lint
+    - run: npm test
+    - name: Prebuildify
+      run: npm run prebuild
+      shell: bash
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+      with:
+        name: prebuilds-${{ matrix.build-group }}
+        path: prebuilds/
+  publish:
+    name: Publish to npm
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    needs: build
+    concurrency:
+      group: ${{ github.ref }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+      with:
+        path: prebuilds
+        pattern: prebuilds-*
+        merge-multiple: true
+    - uses: jitsi/gh-actions/npm-version-bump@6ea91f36593d6a041528b2bf5af1cf667888f48e  # npm-version-bump/v1.0.1
+      with:
+        tag-prefix: 'v'
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v6
+      with:
+        node-version: '24'
+        registry-url: 'https://registry.npmjs.org'
+    - run: npm publish --provenance --access public
